@@ -96,8 +96,10 @@ ENV MODEL_REPO="unsloth/Qwen3.5-35B-A3B-GGUF" \
     CTX_SIZE="65536" \
     TEMPERATURE="0.6" \
     TOP_P="0.95" \
-    TOP_K="20"
-# Optional: NANOCODER_CONFIG_DIR, NANOCODER_CONTEXT_LIMIT — see README.
+    TOP_K="20" \
+    CAI_INFERENCE_BASE_URL="https://ml-64288d82-5dd.go01-dem.ylcu-atmi.cloudera.site/namespaces/serving-default/endpoints/qwen-code/openai/v1" \
+    CAI_INFERENCE_MODEL="qwen-code"
+# Optional: CAI_INFERENCE_API_KEY, NANOCODER_CONFIG_DIR, NANOCODER_CONTEXT_LIMIT — see README.
 
 EXPOSE 8080
 # Set working directory

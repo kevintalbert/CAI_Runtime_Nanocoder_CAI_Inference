@@ -2,8 +2,9 @@
 # /etc/profile.d/nanocoder-local-llm.sh
 #
 # Sourced automatically on every interactive terminal in JupyterLab.
-# Configures [Nanocoder](https://docs.nanocollective.org/nanocoder/docs/v1.25.2)
-# to use llama-server (OpenAI-compatible /v1) on localhost.
+# Configures [Nanocoder](https://docs.nanocollective.org/nanocoder/docs/v1.25.2):
+#   • Optional CAI Inference (OpenAI-compatible) when CAI_INFERENCE_BASE_URL is set
+#   • Local llama-server on localhost when you run nano-start on a GPU session
 #
 # Helper commands:
 #   nano-start    — download GGUF (if needed) and start llama-server in background
@@ -34,11 +35,54 @@ _NANOCODER_CONFIG_DIR="${NANOCODER_CONFIG_DIR:-$HOME/.config/nanocoder}"
 
 # ── Internal helpers ───────────────────────────────────────────────────────
 
+_nano_refresh_cai_env() {
+    _CAI_BASE="${CAI_INFERENCE_BASE_URL:-}"
+    _CAI_MODEL="${CAI_INFERENCE_MODEL:-qwen-code}"
+}
+
+_hosted_inference_configured() {
+    [[ -n "${CAI_INFERENCE_BASE_URL:-}" ]]
+}
+
 _nano_write_config() {
+    _nano_refresh_cai_env
     mkdir -p "$_NANOCODER_CONFIG_DIR"
-    # Per https://docs.nanocollective.org/nanocoder/docs/v1.25.2/configuration/
-    # and providers/llama-cpp — OpenAI-compatible baseUrl must include /v1
-    cat > "$_NANOCODER_CONFIG_DIR/agents.config.json" <<EOF
+    # Nanocoder substitutes ${VAR} in config at load time (see project .env.example).
+    # Local baseUrl: https://docs.nanocollective.org/nanocoder/docs/v1.25.2/configuration/providers/llama-cpp
+    if _hosted_inference_configured; then
+        cat > "$_NANOCODER_CONFIG_DIR/agents.config.json" <<EOF
+{
+  "nanocoder": {
+    "providers": [
+      {
+        "name": "CAI Inference",
+        "baseUrl": "${_CAI_BASE}",
+        "apiKey": "\${CAI_INFERENCE_API_KEY:-}",
+        "models": ["${_CAI_MODEL}"],
+        "requestTimeout": -1,
+        "socketTimeout": -1,
+        "connectionPool": {
+          "idleTimeout": 30000,
+          "cumulativeMaxIdleTimeout": 3600000
+        }
+      },
+      {
+        "name": "llama.cpp (local)",
+        "baseUrl": "http://127.0.0.1:${_LLAMA_PORT}/v1",
+        "models": ["${_MODEL_ALIAS}"],
+        "requestTimeout": -1,
+        "socketTimeout": -1,
+        "connectionPool": {
+          "idleTimeout": 30000,
+          "cumulativeMaxIdleTimeout": 3600000
+        }
+      }
+    ]
+  }
+}
+EOF
+    else
+        cat > "$_NANOCODER_CONFIG_DIR/agents.config.json" <<EOF
 {
   "nanocoder": {
     "providers": [
@@ -57,6 +101,7 @@ _nano_write_config() {
   }
 }
 EOF
+    fi
 }
 
 _gpu_available() {
@@ -147,9 +192,20 @@ _nano_startup() {
 
     if _llama_is_running; then
         echo "│  ✓ llama-server on port ${_LLAMA_PORT} (OpenAI-compatible /v1)"
-        echo "│  ✓ Run: nanocoder   then /model ${_MODEL_ALIAS}"
+        echo "│  ✓ Run: nanocoder   then /model ${_MODEL_ALIAS} (local)"
+        if _hosted_inference_configured; then
+            echo "│  ✓ CAI Inference also configured — /provider to switch"
+        fi
+    elif _hosted_inference_configured; then
+        echo "│  ✓ CAI Inference (hosted) — model id: ${CAI_INFERENCE_MODEL:-qwen-code}"
+        echo "│  ✓ Run: nanocoder  →  /provider  →  CAI Inference  →  /model ${CAI_INFERENCE_MODEL:-qwen-code}"
+        echo "│    No GPU required for the hosted path."
+        if _gpu_available; then
+            echo "│  ○ Optional local GPU: run 'nano-start' for llama.cpp on this machine"
+        fi
     elif ! _gpu_available; then
-        echo "│  ✗ No GPU — assign a GPU, then run 'nano-start'"
+        echo "│  ✗ No GPU and CAI_INFERENCE_BASE_URL is not set."
+        echo "│    Set CAI_INFERENCE_BASE_URL to your OpenAI-compatible endpoint, or assign a GPU."
     else
         echo "│  ✓ GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
         echo "│  ○ llama-server not running — run 'nano-start'"
@@ -165,9 +221,16 @@ _nano_startup() {
 # ── nano-start ───────────────────────────────────────────────────────────────
 
 nano-start() {
+    _nano_refresh_cai_env
     if ! _gpu_available; then
-        echo "✗ No NVIDIA GPU detected — nano-start requires a GPU."
-        echo "  Assign a GPU resource to this CML session and restart."
+        echo "✗ No NVIDIA GPU — local llama-server cannot use GPU offload here."
+        if _hosted_inference_configured; then
+            _nano_write_config
+            echo "✓ CAI_INFERENCE_BASE_URL is set — use hosted inference (no local server)."
+            echo "  Run: nanocoder  →  /provider  →  CAI Inference  →  /model ${CAI_INFERENCE_MODEL:-qwen-code}"
+            return 0
+        fi
+        echo "  Set CAI_INFERENCE_BASE_URL for a hosted OpenAI-compatible endpoint, or assign a GPU."
         return 1
     fi
     echo "✓ GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
@@ -196,6 +259,11 @@ nano-start() {
 }
 
 nano-status() {
+    _nano_refresh_cai_env
+    if _hosted_inference_configured; then
+        echo "✓ CAI Inference baseUrl: ${CAI_INFERENCE_BASE_URL}"
+        echo "  Model id (Nanocoder): ${CAI_INFERENCE_MODEL:-qwen-code}"
+    fi
     if _llama_is_running; then
         echo "✓ llama-server on port ${_LLAMA_PORT}"
         echo "  Config: ${_NANOCODER_CONFIG_DIR}/agents.config.json"
@@ -204,10 +272,22 @@ nano-status() {
         echo "✗ llama-server is not running"
         [[ -f "$_DOWNLOAD_LOG_FILE" ]] && echo "  Download log: tail -1 → $(tail -1 $_DOWNLOAD_LOG_FILE)"
         echo "  Logs: tail -f ${_DOWNLOAD_LOG_FILE}  |  ${_LLAMA_LOG_FILE}"
+        _hosted_inference_configured || echo "  (No CAI_INFERENCE_BASE_URL — set it to use hosted inference without local llama.)"
     fi
 }
 
 nano-wait() {
+    _nano_refresh_cai_env
+    if _llama_is_running; then
+        echo "✓ llama-server is ready. Run: nanocoder"
+        echo "  Local model: /model ${_MODEL_ALIAS}"
+        return 0
+    fi
+    if _hosted_inference_configured; then
+        echo "✓ Hosted CAI Inference is configured (local llama not required)."
+        echo "  Run: nanocoder  →  /provider  →  CAI Inference  →  /model ${CAI_INFERENCE_MODEL:-qwen-code}"
+        return 0
+    fi
     echo "Waiting for llama-server ..."
     local i=0
     while (( i < 600 )); do
@@ -221,6 +301,7 @@ nano-wait() {
         (( i % 30 == 0 )) && echo "  Still waiting ... (${i}s)"
     done
     echo "✗ llama-server did not become ready within 600s"
+    echo "  Tip: set CAI_INFERENCE_BASE_URL to use a hosted model without local llama."
     return 1
 }
 
@@ -240,6 +321,11 @@ nano-stop() {
 }
 
 nano-restart() {
+    if ! _gpu_available; then
+        echo "✗ nano-restart needs a GPU for local llama-server."
+        _hosted_inference_configured && echo "  Hosted path: run nanocoder (CAI Inference provider)."
+        return 1
+    fi
     nano-stop
     sleep 1
     local model_file

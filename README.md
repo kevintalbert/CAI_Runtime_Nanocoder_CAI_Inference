@@ -1,6 +1,11 @@
 # CAI Community Runtime — Nanocoder with local Qwen via llama.cpp
 
-Run [Nanocoder](https://docs.nanocollective.org/nanocoder/docs/v1.25.2) against a **local** OpenAI-compatible server inside a **Cloudera AI (CAI)** workspace. An open-weight model (Qwen3.5 by default) is served by [llama.cpp](https://github.com/ggml-org/llama.cpp) on the GPU; Nanocoder is configured with the [llama.cpp provider](https://docs.nanocollective.org/nanocoder/docs/v1.25.2/configuration/providers/llama-cpp) (`baseUrl` …`/v1`, `models` matching `--alias`). No cloud API key is required for that path.
+Run [Nanocoder](https://docs.nanocollective.org/nanocoder/docs/v1.25.2) inside a **Cloudera AI (CAI)** workspace in either mode:
+
+1. **Hosted CAI Inference** — OpenAI-compatible `baseUrl` (no GPU in the session). Set **`CAI_INFERENCE_BASE_URL`** and **`CAI_INFERENCE_API_KEY`** in CML/CAI project (or session) environment variables; see [Where to set the CAI Inference URL and token](#where-to-set-the-cai-inference-url-and-token). The image can ship a default URL in the Dockerfile; override there when your route differs.
+2. **Local GPU** — [llama.cpp](https://github.com/ggml-org/llama.cpp) serves an open-weight GGUF on the GPU; Nanocoder uses the [llama.cpp provider](https://docs.nanocollective.org/nanocoder/docs/v1.25.2/configuration/providers/llama-cpp) (`baseUrl` …`/v1`, `models` matching `--alias`).
+
+When both are configured, use **`/provider`** in Nanocoder to switch between **CAI Inference** and **llama.cpp (local)**.
 
 ---
 
@@ -18,17 +23,27 @@ After you publish an image built from this repo, register it in CAI (example tag
 
 ### 2. Start a session
 
-Create a new CAI project, select this runtime, and assign a **GPU instance** (24 GB VRAM recommended — see [GPU requirements](#gpu-requirements)).
+- **GPU + local model:** assign a **GPU** (24 GB VRAM recommended — see [GPU requirements](#gpu-requirements)).
+- **CPU / no GPU:** leave GPU unassigned; ensure `CAI_INFERENCE_BASE_URL` is set (built-in default in the Dockerfile points at your CAI Inference OpenAI route unless you override it in CML).
 
 ### 3. Open a terminal
 
+**Hosted inference only (no GPU):**
+
 ```bash
-nano-start    # first run: downloads the GGUF, then starts llama-server on GPU
-nano-wait     # blocks until the server is ready
-nanocoder     # local-first CLI; use /model with your MODEL_ALIAS if prompted
+nano-wait     # succeeds immediately when CAI_INFERENCE_BASE_URL is set
+nanocoder     # /provider → CAI Inference → /model with your CAI_INFERENCE_MODEL
 ```
 
-Nanocoder reads `~/.config/nanocoder/agents.config.json`, which the startup script regenerates each session so the **llama.cpp** provider points at `http://127.0.0.1:$LLAMA_SERVER_PORT/v1` and lists your `MODEL_ALIAS`.
+**Local llama on GPU:**
+
+```bash
+nano-start    # first run: downloads the GGUF, then starts llama-server on GPU
+nano-wait     # blocks until the local server is ready (or exits early if only hosted is configured)
+nanocoder     # /provider → llama.cpp (local) → /model with your MODEL_ALIAS
+```
+
+Nanocoder reads `~/.config/nanocoder/agents.config.json`, regenerated each login. It includes **CAI Inference** when `CAI_INFERENCE_BASE_URL` is non-empty, and **llama.cpp (local)** when you use local inference.
 
 ---
 
@@ -49,6 +64,31 @@ Nanocoder reads `~/.config/nanocoder/agents.config.json`, which the startup scri
 
 Environment variables can be set on the CAI project or session. The model cache lives under `/home/cdsw/models/` and persists across sessions.
 
+### Where to set the CAI Inference URL and token
+
+Use **Cloudera AI (CAI) / Cloudera Machine Learning (CML) environment variables** so every workbench session exports them before a terminal starts (and before `nanocoder` reads config).
+
+1. **Project-level (recommended)**  
+   Open your **project** → **Settings** (or **Project settings**) → **Environment variables** (the label may be **Environment**, **Variables**, or **Advanced** depending on your Cloudera version).  
+   Add or edit:
+
+   | Name | Purpose |
+   |------|--------|
+   | `CAI_INFERENCE_BASE_URL` | Full OpenAI-compatible base URL for your serving route, including the path through **`/v1`** (example shape: `https://…/namespaces/…/endpoints/…/openai/v1`). |
+   | `CAI_INFERENCE_API_KEY` | API key, bearer token, or workload token required by that endpoint. Omit if the route allows unauthenticated calls from your network. |
+   | `CAI_INFERENCE_MODEL` | *(Optional.)* Model id sent in chat requests; must match what the inference service expects (default in the image is `qwen-code`). |
+
+   Save, then **start a new session** (or restart the workbench) so variables are picked up.
+
+2. **Session or workspace overrides**  
+   If your deployment supports **per-session** or **per-model** environment overrides, set the same variable names there; they typically override project defaults for that session only.
+
+3. **Image defaults (URL only)**  
+   This repo’s **`Dockerfile`** sets a default **`CAI_INFERENCE_BASE_URL`** (and **`CAI_INFERENCE_MODEL`**) via `ENV` so CPU-only sessions work out of the box when that URL is correct for your cluster. **Override in the project** when the hostname, namespace, endpoint name, or path changes. **Do not put secrets in the Dockerfile**; use **`CAI_INFERENCE_API_KEY`** only in CML/CAI project or session environment variables (or your org’s secret store if you later wire that into env at session start).
+
+4. **How Nanocoder receives the token**  
+   On each login, `scripts/startup.sh` writes `~/.config/nanocoder/agents.config.json`. The **CAI Inference** provider’s `apiKey` field uses Nanocoder’s [environment substitution](https://docs.nanocollective.org/nanocoder/docs/v1.25.2/configuration/) so the literal value **`${CAI_INFERENCE_API_KEY:-}`** is resolved when Nanocoder runs. You do **not** need to edit `agents.config.json` by hand for normal use.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MODEL_REPO` | `unsloth/Qwen3.5-35B-A3B-GGUF` | HuggingFace repo to download |
@@ -63,6 +103,9 @@ Environment variables can be set on the CAI project or session. The model cache 
 | `TOP_K` | `20` | Top-k sampling |
 | `LLAMA_SERVER_PORT` | `8001` | llama-server listen port |
 | `HF_TOKEN` | *(empty)* | HuggingFace token for gated models |
+| `CAI_INFERENCE_BASE_URL` | *(see Dockerfile `ENV`)* | OpenAI-compatible base URL (must include path through `/v1`, no trailing slash beyond what your route expects) |
+| `CAI_INFERENCE_MODEL` | `qwen-code` | Model id sent in API requests (must match what your inference service expects) |
+| `CAI_INFERENCE_API_KEY` | *(empty)* | Bearer/API key if your endpoint requires auth; referenced from `agents.config.json` via Nanocoder env substitution |
 
 ### Swapping models
 
@@ -76,7 +119,7 @@ Nanocoder supports `NANOCODER_PROVIDERS` / `NANOCODER_PROVIDERS_FILE` with **hig
 
 ## GPU requirements
 
-`nano-start` refuses to run if no NVIDIA GPU is detected.
+`nano-start` starts local **llama-server** only when an NVIDIA GPU is present. Without a GPU, use the **CAI Inference** provider (`CAI_INFERENCE_BASE_URL`) or set that variable and run **`nanocoder`** directly.
 
 | GPU | VRAM | Notes |
 |-----|------|--------|
