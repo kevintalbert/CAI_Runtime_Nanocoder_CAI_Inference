@@ -7,33 +7,65 @@
 #   • Local llama-server on localhost when you run nano-start on a GPU session
 #
 # Helper commands:
+#   nano-refresh-config — re-source session.env, re-read env, rewrite agents.config.json
 #   nano-start    — download GGUF (if needed) and start llama-server in background
 #   nano-status   — is the server up?
 #   nano-wait     — block until server ready, then print how to run Nanocoder
 #   nano-logs     — tail llama-server output
 #   nano-restart  — kill and restart llama-server
 #   nano-stop     — kill llama-server
+#
+# Session env (optional): set NANOCODER_SESSION_ENV_FILE to a path, or create
+#   ~/.config/nanocoder/session.env with export KEY=value lines. Sourced on each
+#   interactive shell (set -a) before agents.config.json is written.
 
 # Only run in interactive shells
 [[ $- != *i* ]] && return
 
-# ── Resolve config (env vars always win) ──────────────────────────────────
-_LLAMA_PORT="${LLAMA_SERVER_PORT:-8001}"
-_MODEL_REPO="${MODEL_REPO:-unsloth/Qwen3.5-35B-A3B-GGUF}"
-_MODEL_INCLUDE="${MODEL_INCLUDE:-*UD-Q4_K_XL*}"
-_MODEL_ALIAS="${MODEL_ALIAS:-unsloth/Qwen3.5-35B-A3B}"
-_MODEL_DIR="${MODEL_DIR:-/home/cdsw/models}"
-_CTX_SIZE="${CTX_SIZE:-65536}"
-_TEMP="${TEMPERATURE:-0.6}"
-_TOP_P="${TOP_P:-0.95}"
-_TOP_K="${TOP_K:-20}"
-
-_LLAMA_PID_FILE="/tmp/llama-server.pid"
-_LLAMA_LOG_FILE="/tmp/llama-server.log"
-_DOWNLOAD_LOG_FILE="/tmp/llama-model-download.log"
-_NANOCODER_CONFIG_DIR="${NANOCODER_CONFIG_DIR:-$HOME/.config/nanocoder}"
-
 # ── Internal helpers ───────────────────────────────────────────────────────
+
+_nano_source_session_env() {
+    local f="${NANOCODER_SESSION_ENV_FILE:-}"
+    if [[ -n "$f" && -f "$f" ]]; then
+        # shellcheck disable=SC1090
+        set -a && source "$f" && set +a && return
+    fi
+    local def="${HOME}/.config/nanocoder/session.env"
+    if [[ -f "$def" ]]; then
+        # shellcheck disable=SC1090
+        set -a && source "$def" && set +a
+    fi
+}
+
+_nano_reload_runtime_env() {
+    _LLAMA_PORT="${LLAMA_SERVER_PORT:-8001}"
+    _MODEL_REPO="${MODEL_REPO:-unsloth/Qwen3.5-35B-A3B-GGUF}"
+    _MODEL_INCLUDE="${MODEL_INCLUDE:-*UD-Q4_K_XL*}"
+    _MODEL_ALIAS="${MODEL_ALIAS:-unsloth/Qwen3.5-35B-A3B}"
+    _MODEL_DIR="${MODEL_DIR:-/home/cdsw/models}"
+    _CTX_SIZE="${CTX_SIZE:-65536}"
+    _TEMP="${TEMPERATURE:-0.6}"
+    _TOP_P="${TOP_P:-0.95}"
+    _TOP_K="${TOP_K:-20}"
+    _LLAMA_PID_FILE="/tmp/llama-server.pid"
+    _LLAMA_LOG_FILE="/tmp/llama-server.log"
+    _DOWNLOAD_LOG_FILE="/tmp/llama-model-download.log"
+    _NANOCODER_CONFIG_DIR="${NANOCODER_CONFIG_DIR:-$HOME/.config/nanocoder}"
+}
+
+_nano_set_disable_tools_line() {
+    case "${NANOCODER_DISABLE_TOOLS:-}" in
+        1|true|TRUE|yes|YES|on|ON)
+            _NANO_DT_LINE=$',\n        "disableTools": true'
+            ;;
+        *)
+            _NANO_DT_LINE=''
+            ;;
+    esac
+}
+
+_nano_source_session_env
+_nano_reload_runtime_env
 
 _nano_refresh_cai_env() {
     _CAI_BASE="${CAI_INFERENCE_BASE_URL:-}"
@@ -45,7 +77,9 @@ _hosted_inference_configured() {
 }
 
 _nano_write_config() {
+    _nano_reload_runtime_env
     _nano_refresh_cai_env
+    _nano_set_disable_tools_line
     mkdir -p "$_NANOCODER_CONFIG_DIR"
     # Nanocoder substitutes ${VAR} in config at load time (see project .env.example).
     # Local baseUrl: https://docs.nanocollective.org/nanocoder/docs/v1.25.2/configuration/providers/llama-cpp
@@ -64,7 +98,7 @@ _nano_write_config() {
         "connectionPool": {
           "idleTimeout": 30000,
           "cumulativeMaxIdleTimeout": 3600000
-        }
+        }${_NANO_DT_LINE}
       },
       {
         "name": "llama.cpp (local)",
@@ -75,7 +109,7 @@ _nano_write_config() {
         "connectionPool": {
           "idleTimeout": 30000,
           "cumulativeMaxIdleTimeout": 3600000
-        }
+        }${_NANO_DT_LINE}
       }
     ]
   }
@@ -95,7 +129,7 @@ EOF
         "connectionPool": {
           "idleTimeout": 30000,
           "cumulativeMaxIdleTimeout": 3600000
-        }
+        }${_NANO_DT_LINE}
       }
     ]
   }
@@ -213,9 +247,17 @@ _nano_startup() {
 
     echo "│"
     echo "│  Docs: https://docs.nanocollective.org/nanocoder/docs/v1.25.2"
-    echo "│  Commands: nano-start  nano-status  nano-wait  nano-logs  nano-restart  nano-stop"
+    echo "│  Commands: nano-refresh-config  nano-start  nano-status  nano-wait  nano-logs  nano-restart  nano-stop"
     echo "└──────────────────────────────────────────────────────────┘"
     echo ""
+}
+
+# ── nano-refresh-config ──────────────────────────────────────────────────────
+
+nano-refresh-config() {
+    _nano_source_session_env
+    _nano_write_config
+    echo "Updated ${_NANOCODER_CONFIG_DIR}/agents.config.json (from env + optional session.env)."
 }
 
 # ── nano-start ───────────────────────────────────────────────────────────────

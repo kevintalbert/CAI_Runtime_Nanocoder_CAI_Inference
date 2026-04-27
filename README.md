@@ -14,7 +14,13 @@ When both are configured, use **`/provider`** in Nanocoder to switch between **C
 After you publish an image built from this repo, register it in CAI (example tag shown for a 1.0.5 Nanocoder build):
 
 ```
-<your-registry>/cai-nanocoder-qwen:1.0.5
+<your-registry>/cai-nanocoder-qwen:1.0.1
+```
+
+For example, here is one already built:
+
+```
+kevintalbert/nanocoder:1.0.1
 ```
 
 ### 1. Register the runtime in CAI
@@ -51,6 +57,7 @@ Nanocoder reads `~/.config/nanocoder/agents.config.json`, regenerated each login
 
 | Command | Description |
 |--------|-------------|
+| `nano-refresh-config` | Re-source optional `session.env`, re-read all env vars, rewrite `agents.config.json` (use after changing env in the same shell) |
 | `nano-start` | Download model (if needed) and start llama-server in the background |
 | `nano-wait` | Block until the server is ready |
 | `nano-status` | Check if llama-server is running |
@@ -87,7 +94,13 @@ Use **Cloudera AI (CAI) / Cloudera Machine Learning (CML) environment variables*
    This repo’s **`Dockerfile`** sets a default **`CAI_INFERENCE_BASE_URL`** (and **`CAI_INFERENCE_MODEL`**) via `ENV` so CPU-only sessions work out of the box when that URL is correct for your cluster. **Override in the project** when the hostname, namespace, endpoint name, or path changes. **Do not put secrets in the Dockerfile**; use **`CAI_INFERENCE_API_KEY`** only in CML/CAI project or session environment variables (or your org’s secret store if you later wire that into env at session start).
 
 4. **How Nanocoder receives the token**  
-   On each login, `scripts/startup.sh` writes `~/.config/nanocoder/agents.config.json`. The **CAI Inference** provider’s `apiKey` field uses Nanocoder’s [environment substitution](https://docs.nanocollective.org/nanocoder/docs/v1.25.2/configuration/) so the literal value **`${CAI_INFERENCE_API_KEY:-}`** is resolved when Nanocoder runs. You do **not** need to edit `agents.config.json` by hand for normal use.
+   The **CAI Inference** provider’s `apiKey` in `agents.config.json` uses Nanocoder’s [environment substitution](https://docs.nanocollective.org/nanocoder/docs/v1.25.2/configuration/) so the literal **`${CAI_INFERENCE_API_KEY:-}`** is resolved when Nanocoder runs. You do **not** need to edit `agents.config.json` by hand for normal use.
+
+5. **Regenerating `agents.config.json` from the session environment**  
+   On **every new interactive terminal**, `scripts/startup.sh` (installed as `/etc/profile.d/nanocoder-local-llm.sh`) runs in this order:
+   - **Optional file:** If **`NANOCODER_SESSION_ENV_FILE`** points to an existing file, it is **`source`d** with **`set -a`** so variables are **exported**. Otherwise, if **`~/.config/nanocoder/session.env`** exists, that file is sourced the same way. Use standard shell lines such as `export CAI_INFERENCE_API_KEY=…`.
+   - **Process environment:** Variables already injected by CAI/CML (project or session **Environment variables**) are read as usual; the script then copies the current values of `CAI_*`, `MODEL_*`, etc. into **`~/.config/nanocoder/agents.config.json`** (or **`$NANOCODER_CONFIG_DIR/agents.config.json`**).
+   - **`nano-refresh-config`:** Run this in an **already-open** terminal after you change project/session env or edit `session.env`, so the JSON is rewritten without opening a new shell.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -106,6 +119,9 @@ Use **Cloudera AI (CAI) / Cloudera Machine Learning (CML) environment variables*
 | `CAI_INFERENCE_BASE_URL` | *(see Dockerfile `ENV`)* | OpenAI-compatible base URL (must include path through `/v1`, no trailing slash beyond what your route expects) |
 | `CAI_INFERENCE_MODEL` | `qwen-code` | Model id sent in API requests (must match what your inference service expects) |
 | `CAI_INFERENCE_API_KEY` | *(empty)* | Bearer/API key if your endpoint requires auth; referenced from `agents.config.json` via Nanocoder env substitution |
+| `NANOCODER_SESSION_ENV_FILE` | *(unset)* | Absolute path to a shell file (`export VAR=value`) sourced at terminal start before writing `agents.config.json`; overrides default path below if set |
+| *(default file)* | — | If `NANOCODER_SESSION_ENV_FILE` is unset, **`~/.config/nanocoder/session.env`** is sourced when it exists |
+| `NANOCODER_DISABLE_TOOLS` | *(unset / false)* | If **`1`**, **`true`**, **`yes`**, or **`on`** (case-insensitive), each provider in `agents.config.json` gets **`"disableTools": true`** (disables tool calling for that provider in Nanocoder) |
 
 ### Swapping models
 
@@ -138,7 +154,7 @@ Docker Desktop needs ample disk (CUDA build is heavy).
 ```bash
 docker build --pull --rm \
   -f Dockerfile \
-  -t <your-registry>/cai-nanocoder-qwen:1.0.5 .
+  -t <your-registry>/nanocoder:1.0.1 .
 ```
 
 ---
